@@ -49,8 +49,7 @@ import re
 import socket
 from time import strftime, gmtime
 from urlparse import urlsplit
-from urllib import quote
-from urllib2 import urlopen, HTTPError
+from urllib2 import quote, urlopen, HTTPError
 
 __docformat__ = "restructuredtext en"
 
@@ -152,6 +151,7 @@ NOSIMILARITIES_REG = re.compile('There are no similar items for this ASIN: '
 NOT_ENOUGH_PARAMETERS_REG = re.compile('Your request should have atleast '
         '(?P<numer>\d+) of the following parameters: (?P<parameters>[\w ,]+).')
 
+
 class API (object):
     
     """
@@ -177,7 +177,8 @@ class API (object):
     REQUESTS_PER_SECOND = 1 #: max requests per second
     TIMEOUT = 5 #: timeout in seconds
     
-    def __init__(self, access_key_id, secret_access_key, locale='de'):
+    def __init__(self, access_key_id, secret_access_key, 
+                 locale='de', processor=None):
         
         self.access_key = access_key_id
         self.secret_key = secret_access_key
@@ -192,6 +193,8 @@ class API (object):
         
         self.last_call = datetime(1970, 1, 1)
         self.throttle = timedelta(seconds=1)/self.REQUESTS_PER_SECOND
+        
+        self.response_processor = processor
         
     def _build_url(self, **qargs):
         """
@@ -252,8 +255,31 @@ class API (object):
     
     def _parse(self, fp):
         """
-        Calls the Amazon Product Advertising API and objectifies the response.
+        Processes the AWS response (file like object). XML is fed in, some 
+        usable output comes out. 
+        
+        It will use a different result_processor if you have defined one. For 
+        instance, here is one using ``xml.minidom`` instead of ``lxml``::
+        
+            def minidom_response_parser(fp):
+                root = parse(fp)
+                # parse errors
+                for error in root.getElementsByTagName('Error'):
+                    code = error.getElementsByTagName('Code')[0].firstChild.nodeValue
+                    msg = error.getElementsByTagName('Message')[0].firstChild.nodeValue
+                    raise AWSError(code, msg)
+                return root
+            api = API(AWS_KEY, SECRET_KEY, processor=minidom_response_parser)
+            root = api.item_lookup('0718155157')
+            print root.toprettyxml()
+            # ...
+            
+        Make sure it raises an ``AWSError`` with the appropriate error code and
+        message.
         """
+        if self.response_processor:
+            return self.response_processor(fp)
+        
         tree = objectify.parse(fp)
         root = tree.getroot()
         
