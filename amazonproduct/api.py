@@ -15,7 +15,6 @@ except ImportError: # pragma: no cover
     from Crypto.Hash import SHA256 as sha256
 
 import hmac
-import re
 import socket
 from time import strftime, gmtime, sleep
 import urllib2
@@ -26,6 +25,9 @@ except ImportError: # pragma: no cover
     from urllib import quote
 
 from amazonproduct.version import VERSION
+from amazonproduct.errors import *
+from amazonproduct.paginators import paginate
+from amazonproduct.processors import LxmlObjectifyProcessor
 
 USER_AGENT = ('python-amazon-product-api/%s '
     '+http://pypi.python.org/pypi/python-amazon-product-api/' % VERSION)
@@ -39,198 +41,6 @@ HOSTS = {
     'uk' : ('ecs.amazonaws.co.uk', 'xml-uk.amznxslt.com'),
     'us' : ('ecs.amazonaws.com', 'xml-us.amznxslt.com'),
 }
-
-class UnknownLocale (Exception):
-    """
-    Raised when unknown locale is specified.
-    """
-
-class AWSError (Exception):
-    """
-    Generic AWS error message.
-    """
-    def __init__(self, code, msg):
-        Exception.__init__(self)
-        self.code = code
-        self.msg = msg
-    def __str__(self): # pragma: no cover
-        return '%(code)s: %(msg)s' % self.__dict__
-
-class InvalidSearchIndex (Exception):
-    """
-    The value specified for SearchIndex is invalid. Valid values include:
-
-    All, Apparel, Automotive, Baby, Beauty, Blended, Books, Classical, DVD,
-    Electronics, ForeignBooks, HealthPersonalCare, HomeGarden, HomeImprovement,
-    Jewelry, Kitchen, Magazines, MP3Downloads, Music, MusicTracks,
-    OfficeProducts, OutdoorLiving, PCHardware, Photo, Shoes, Software,
-    SoftwareVideoGames, SportingGoods, Tools, Toys, VHS, Video, VideoGames,
-    Watches
-    """
-
-class InvalidResponseGroup (Exception):
-    """
-    The specified ResponseGroup parameter is invalid. Valid response groups for
-    ItemLookup requests include:
-
-    Accessories, AlternateVersions, BrowseNodes, Collections, EditorialReview,
-    Images, ItemAttributes, ItemIds, Large, ListmaniaLists, Medium,
-    MerchantItemAttributes, OfferFull, OfferListings, OfferSummary, Offers,
-    PromotionDetails, PromotionSummary, PromotionalTag, RelatedItems, Request,
-    Reviews, SalesRank, SearchBins, SearchInside, ShippingCharges,
-    Similarities, Small, Subjects, Tags, TagsSummary, Tracks, VariationImages,
-    VariationMatrix, VariationMinimum, VariationOffers, VariationSummary,
-    Variations.
-    """
-
-class InvalidParameterValue (Exception):
-    """
-    The specified ItemId parameter is invalid. Please change this value and
-    retry your request.
-    """
-
-class InvalidListType (Exception):
-    """
-    The value you specified for ListType is invalid. Valid values include:
-    BabyRegistry, Listmania, WeddingRegistry, WishList.
-    """
-
-class NoSimilarityForASIN (Exception):
-    """
-    When you specify multiple items, it is possible for there to be no
-    intersection of similar items.
-    """
-
-class NoExactMatchesFound (Exception):
-    """
-    We did not find any matches for your request.
-    """
-
-class TooManyRequests (Exception):
-    """
-    You are submitting requests too quickly and your requests are being
-    throttled. If this is the case, you need to slow your request rate to one
-    request per second.
-    """
-
-class NotEnoughParameters (Exception):
-    """
-    Your request should have at least one parameter which you did not submit.
-    """
-
-class InvalidParameterCombination (Exception):
-    """
-    Your request contained a restricted parameter combination.
-    """
-
-class DeprecatedOperation (Exception):
-    """
-    
-    """
-
-class InvalidOperation (Exception):
-    """
-    The specified feature (operation) is deprecated.
-    """
-
-DEFAULT_ERROR_REGS = {
-    'invalid-value' : re.compile(
-        'The value you specified for (?P<parameter>\w+) is invalid.'),
-
-    'invalid-parameter-value' : re.compile(
-        '(?P<value>.+?) is not a valid value for (?P<parameter>\w+). Please '
-        'change this value and retry your request.'),
-
-    'no-similarities' : re.compile(
-        'There are no similar items for this ASIN: (?P<ASIN>\w+).'),
-
-    'not-enough-parameters' : re.compile(
-        'Your request should have atleast (?P<number>\d+) of the following '
-        'parameters: (?P<parameters>[\w ,]+).'),
-
-    'invalid-parameter-combination' : re.compile(
-         'Your request contained a restricted parameter combination.'
-         '\s*(?P<message>\w.*)$') # only the last bit is of interest here
-}
-
-JAPANESE_ERROR_REGS = {
-    'invalid-value' : re.compile(
-        u'(?P<parameter>\w+)\u306b\u6307\u5b9a\u3057\u305f\u5024\u306f\u7121'
-        u'\u52b9\u3067\u3059\u3002'),
-
-    'invalid-parameter-value' : re.compile(
-        u'(?P<value>.+?)\u306f\u3001(?P<parameter>\w+)\u306e\u5024\u3068\u3057'
-        u'\u3066\u7121\u52b9\u3067\u3059\u3002\u5024\u3092\u5909\u66f4\u3057'
-        u'\u3066\u304b\u3089\u3001\u518d\u5ea6\u30ea\u30af\u30a8\u30b9\u30c8'
-        u'\u3092\u5b9f\u884c\u3057\u3066\u304f\u3060\u3055\u3044\u3002'),
-
-    'no-similarities' : re.compile(
-        'There are no similar items for this ASIN: (?P<ASIN>\w+).'),
-
-    'not-enough-parameters' : re.compile(
-        u'\u6b21\u306e\u30d1\u30e9\u30e1\u30fc\u30bf\u306e\u3046\u3061\u3001'
-        u'\u6700\u4f4e1\u500b\u304c\u30ea\u30af\u30a8\u30b9\u30c8\u306b\u542b'
-        u'\u307e\u308c\u3066\u3044\u308b\u5fc5\u8981\u304c\u3042\u308a\u307e'
-        u'\u3059\uff1a(?P<parameters>.+)$'),
-
-    'invalid-parameter-combination' : re.compile('^(?P<message>.*)$'),
-}
-
-
-class LxmlObjectifyResponseProcessor (object):
-
-    """
-    Response processor using ``lxml.objectify``. It uses a custom lookup
-    mechanism for XML elements to ensure that ItemIds (such as ASINs) are
-    always StringElements and evaluated as such.
-    """
-
-    # pylint: disable-msg=R0903
-
-    def __init__(self):
-
-        from lxml import etree, objectify
-
-        class SelectiveClassLookup(etree.CustomElementClassLookup):
-            """
-            Lookup mechanism for XML elements to ensure that ItemIds (like
-            ASINs) are always StringElements and evaluated as such.
-            Thanks to Brian Browning for pointing this out.
-            """
-            # pylint: disable-msg=W0613
-            def lookup(self, node_type, document, namespace, name):
-                if name in ('ItemId', 'ASIN'):
-                    return objectify.StringElement
-
-        parser = etree.XMLParser()
-        lookup = SelectiveClassLookup()
-        lookup.set_fallback(objectify.ObjectifyElementClassLookup())
-        parser.set_element_class_lookup(lookup)
-
-        # provide a parse method to avoid importing lxml.objectify
-        # every time this processor is called
-        self.parse = lambda fp: objectify.parse(fp, parser)
-
-    def __call__(self, fp):
-        """
-        Parses a file-like object containing the Amazon XML response.
-        """
-        tree = self.parse(fp)
-        root = tree.getroot()
-
-        #~ from lxml import etree
-        #~ print etree.tostring(tree, pretty_print=True)
-
-        nspace = root.nsmap.get(None, '')
-        errors = root.xpath('//aws:Error',
-                         namespaces={'aws' : nspace})
-        for error in errors:
-            code = error.Code.text
-            msg = error.Message.text
-            raise AWSError(code, msg)
-
-        return root
-
 
 class API (object):
 
@@ -302,7 +112,7 @@ class API (object):
         self.throttle = timedelta(seconds=1)/self.REQUESTS_PER_SECOND
         self.debug = 0 # set to 1 if you want to see HTTP headers
 
-        self.response_processor = processor or LxmlObjectifyResponseProcessor()
+        self.response_processor = processor or LxmlObjectifyProcessor()
 
     def _build_url(self, **qargs):
         """
@@ -478,6 +288,7 @@ class API (object):
             # otherwise re-raise exception
             raise # pragma: no cover
 
+    @paginate
     def item_search(self, search_index, **params):
         """
         The ``ItemSearch`` operation returns items that satisfy the search
@@ -604,6 +415,271 @@ class API (object):
             # otherwise re-raise exception
             raise # pragma: no cover
 
+    def _convert_cart_items(self, items, key='ASIN'):
+        """
+        Converts items into correct format for cart operations.
+        """
+        result = {}
+        # TODO ListItemId
+        if type(items) == dict:
+            for no, (item_id, quantity) in enumerate(items.items()):
+                result['Item.%i.%s' % (no+1, key)] = item_id
+                result['Item.%i.Quantity' % (no+1)] = quantity
+        return result
+
+    def cart_create(self, items, **params):
+        """
+        The ``CartCreate`` operation enables you to create a remote shopping
+        cart.  A shopping cart is the metaphor used by most e-commerce
+        solutions. It is a temporary data storage structure that resides on
+        Amazon servers.  The structure contains the items a customer wants to
+        buy. In Product Advertising API, the shopping cart is considered remote
+        because it is hosted by Amazon servers. In this way, the cart is remote
+        to the vendor's web site where the customer views and selects the items
+        they want to purchase.
+
+        Once you add an item to a cart by specifying the item's ListItemId and
+        ASIN, or OfferListing ID, the item is assigned a ``CartItemId`` and
+        accessible only by that value. That is, in subsequent requests, an item
+        in a cart cannot be accessed by its ``ListItemId`` and ``ASIN``, or
+        ``OfferListingId``. ``CartItemId`` is returned by ``CartCreate``,
+        ``CartGet``, and C``artAdd``.
+
+        Because the contents of a cart can change for different reasons, such
+        as item availability, you should not keep a copy of a cart locally.
+        Instead, use the other cart operations to modify the cart contents. For
+        example, to retrieve contents of the cart, which are represented by
+        CartItemIds, use ``CartGet``.
+
+        Available products are added as cart items. Unavailable items, for
+        example, items out of stock, discontinued, or future releases, are
+        added as SaveForLaterItems. No error is generated. The Amazon database
+        changes regularly. You may find a product with an offer listing ID but
+        by the time the item is added to the cart the product is no longer
+        available. The checkout page in the Order Pipeline clearly lists items
+        that are available and those that are SaveForLaterItems.
+
+        It is impossible to create an empty shopping cart. You have to add at
+        least one item to a shopping cart using a single ``CartCreate``
+        request.  You can add specific quantities (up to 999) of each item.
+
+        ``CartCreate`` can be used only once in the life cycle of a cart. To
+        modify the contents of the cart, use one of the other cart operations.
+
+        Carts cannot be deleted. They expire automatically after being unused
+        for 7 days. The lifespan of a cart restarts, however, every time a cart
+        is modified. In this way, a cart can last for more than 7 days. If, for
+        example, on day 6, the customer modifies a cart, the 7 day countdown
+        starts over.
+        """
+        try:
+            params.update(self._convert_cart_items(items))
+            return self.call(Operation='CartCreate', **params)
+        except AWSError, e:
+
+            if e.code == 'AWS.MissingParameters':
+                raise ValueError(e.msg)
+
+            if e.code == 'AWS.ParameterOutOfRange':
+                raise ValueError(e.msg)
+
+            if e.code == 'AWS.ECommerceService.ItemNotEligibleForCart':
+                raise InvalidCartItem(e.msg)
+
+            # otherwise re-raise exception
+            raise # pragma: no cover
+
+    def cart_add(self, cart_id, hmac, items, **params):
+        """
+        The ``CartAdd`` operation enables you to add items to an existing
+        remote shopping cart. ``CartAdd`` can only be used to place a new item
+        in a shopping cart. It cannot be used to increase the quantity of an
+        item already in the cart. If you would like to increase the quantity of
+        an item that is already in the cart, you must use the ``CartModify``
+        operation.
+
+        You add an item to a cart by specifying the item's ``OfferListingId``,
+        or ``ASIN`` and ``ListItemId``. Once in a cart, an item can only be
+        identified by its ``CartItemId``. That is, an item in a cart cannot be
+        accessed by its ASIN or OfferListingId. CartItemId is returned by
+        ``CartCreate``, ``CartGet``, and ``CartAdd``.
+
+        To add items to a cart, you must specify the cart using the ``CartId``
+        and ``HMAC`` values, which are returned by the ``CartCreate``
+        operation.
+
+        If the associated CartCreate request specified an AssociateTag, all
+        ``CartAdd`` requests must also include a value for Associate Tag
+        otherwise the request will fail.
+
+        .. note:: Some manufacturers have a minimum advertised price (MAP) that
+        can be displayed on Amazon's retail web site. In these cases, when
+        performing a Cart operation, the MAP Is returned instead of the actual
+        price. The only way to see the actual price is to add the item to a
+        remote shopping cart and follow the PurchaseURL. The actual price will
+        be the MAP or lower.
+        """
+        try:
+            params.update({
+                'CartId' : cart_id,
+                'HMAC' : hmac,
+            })
+            params.update(self._convert_cart_items(items))
+            return self.call(Operation='CartAdd', **params)
+        except AWSError, e:
+
+            if e.code == 'AWS.ECommerceService.InvalidCartId':
+                raise InvalidCartId
+
+            if e.code == 'AWS.ECommerceService.CartInfoMismatch':
+                raise CartInfoMismatch
+
+            if e.code == 'AWS.MissingParameters':
+                raise ValueError(e.msg)
+
+            if e.code == 'AWS.ParameterOutOfRange':
+                raise ValueError(e.msg)
+
+            if e.code == 'AWS.ECommerceService.ItemNotEligibleForCart':
+                raise InvalidCartItem(e.msg)
+
+            if e.code == 'AWS.ECommerceService.ItemAlreadyInCart':
+                if self.locale == 'jp': print e.msg
+                item = self._reg('already-in-cart').search(e.msg).group('item')
+                raise ItemAlreadyInCart(item)
+
+            # otherwise re-raise exception
+            raise # pragma: no cover
+
+    def cart_modify(self, cart_id, hmac, items, **params):
+        """
+        The ``CartModify`` operation enables you to change the quantity of
+        items that are already in a remote shopping cart and move items from
+        the active area of a cart to the SaveForLater area or the reverse.
+
+        To modify the number of items in a cart, you must specify the cart
+        using the CartId and HMAC values that are returned in the CartCreate
+        operation. A value similar to HMAC, URLEncodedHMAC, is also returned.
+        This value is the URL encoded version of the HMAC. This encoding is
+        necessary because some characters, such as + and /, cannot be included
+        in a URL. Rather than encoding the HMAC yourself, use the
+        URLEncodedHMAC value for the HMAC parameter.
+
+        You can use ``CartModify`` to modify the number of items in a remote
+        shopping cart by setting the value of the Quantity parameter
+        appropriately. You can eliminate an item from a cart by setting the
+        value of the Quantity parameter to zero. Or, you can double the number
+        of a particular item in the cart by doubling its Quantity . You cannot,
+        however, use ``CartModify`` to add new items to a cart.
+
+        If the associated CartCreate request specified an AssociateTag, all
+        ``CartModify`` requests must also include a value for Associate Tag
+        otherwise the request will fail.
+        """
+        # TODO Action=SaveForLater
+        try:
+            params.update({
+                'CartId' : cart_id,
+                'HMAC' : hmac,
+            })
+            params.update(self._convert_cart_items(items, key='CartItemId'))
+            return self.call(Operation='CartModify', **params)
+        except AWSError, e:
+
+            if e.code == 'AWS.ECommerceService.CartInfoMismatch':
+                raise CartInfoMismatch
+
+            if e.code == 'AWS.MissingParameters':
+                raise ValueError(e.msg)
+
+            if e.code == 'AWS.ParameterOutOfRange':
+                raise ValueError(e.msg)
+
+            if e.code == 'AWS.ECommerceService.ItemNotEligibleForCart':
+                raise InvalidCartItem(e.msg)
+
+            # otherwise re-raise exception
+            raise # pragma: no cover
+
+    def cart_get(self, cart_id, hmac, **params):
+        """
+        The ``CartGet`` operation enables you to retrieve the IDs, quantities,
+        and prices of all of the items, including SavedForLater items in a
+        remote shopping cart.
+
+        Because the contents of a cart can change for different reasons, such
+        as availability, you should not keep a copy of a cart locally. Instead,
+        use ``CartGet`` to retrieve the items in a remote shopping cart.
+
+        To retrieve the items in a cart, you must specify the cart using the
+        ``CartId`` and ``HMAC`` values, which are returned in the
+        ``CartCreate`` operation.  A value similar to HMAC, ``URLEncodedHMAC``,
+        is also returned. This value is the URL encoded version of the
+        ``HMAC``. This encoding is necessary because some characters, such as
+        ``+`` and ``/``, cannot be included in a URL.  Rather than encoding the
+        ``HMAC`` yourself, use the ``URLEncodedHMAC`` value for the HMAC
+        parameter.
+
+        ``CartGet`` does not work after the customer has used the
+        ``PurchaseURL`` to either purchase the items or merge them with the
+        items in their Amazon cart.
+
+        If the associated ``CartCreate`` request specified an ``AssociateTag``,
+        all ``CartGet`` requests must also include a value for ``AssociateTag``
+        otherwise the request will fail.
+        """
+        try:
+            params.update({
+                'CartId' : cart_id,
+                'HMAC' : hmac,
+            })
+            return self.call(Operation='CartGet', **params)
+        except AWSError, e:
+
+            if e.code == 'AWS.ECommerceService.CartInfoMismatch':
+                raise CartInfoMismatch
+
+            # otherwise re-raise exception
+            raise # pragma: no cover
+
+    def cart_clear(self, cart_id, hmac, **params):
+        """
+        The ``CartClear`` operation enables you to remove all of the items in a
+        remote shopping cart, including SavedForLater items. To remove only
+        some of the items in a cart or to reduce the quantity of one or more
+        items, use ``CartModify``.
+
+        To delete all of the items from a remote shopping cart, you must
+        specify the cart using the ``CartId`` and ``HMAC`` values, which are
+        returned by the ``CartCreate`` operation. A value similar to the
+        ``HMAC``, ``URLEncodedHMAC``, is also returned. This value is the URL
+        encoded version of the ``HMAC``. This encoding is necessary because
+        some characters, such as ``+`` and ``/``, cannot be included in a URL.
+        Rather than encoding the ``HMAC`` yourself, use the U``RLEncodedHMAC``
+        value for the HMAC parameter.
+
+        ``CartClear`` does not work after the customer has used the
+        ``PurchaseURL`` to either purchase the items or merge them with the
+        items in their Amazon cart.
+
+        Carts exist even though they have been emptied. The lifespan of a cart
+        is 7 days since the last time it was acted upon. For example, if a cart
+        created 6 days ago is modified, the cart lifespan is reset to 7 days.
+        """
+        try:
+            params.update({
+                'CartId' : cart_id,
+                'HMAC' : hmac,
+            })
+            return self.call(Operation='CartClear', **params)
+        except AWSError, e:
+
+            if e.code == 'AWS.ECommerceService.CartInfoMismatch':
+                raise CartInfoMismatch
+
+            # otherwise re-raise exception
+            raise # pragma: no cover
+
     def deprecated_operation(self, *args, **kwargs):
         """
         Some operations are deprecated and will be answered with HTTP 410. To
@@ -624,114 +700,3 @@ class API (object):
     #: MultiOperation is supported outside this API
     multi_operation = None
 
-
-class ResultPaginator (object):
-
-    """
-    Wrapper class for paginated results. This class will call the passed
-    function iteratively until either the specified limit is reached or all
-    result pages are fetched.
-
-    A small example fetching reviews for a book::
-
-        api = API(AWS_KEY, SECRET_KEY)
-        paginator = ResultPaginator('ReviewPage',
-            '//aws:Items/aws:Request/aws:ItemLookupRequest/aws:ReviewPage',
-            '//aws:Items/aws:Item/aws:CustomerReviews/aws:TotalReviewPages',
-            '//aws:Items/aws:Item/aws:CustomerReviews/aws:TotalReviews')
-
-        for root in paginator(api.item_lookup, id=isbn, IdType='ISBN',
-                             SearchIndex='Books', ResponseGroup='Reviews'):
-            ...
-
-    .. note: All three XPath expressions have to return integer values for the
-       pagination to work!
-    """
-
-    def __init__(self, counter, current_page, total_pages, total_results,
-                 limit=400, nspace=None):
-        """
-        :param counter: counter variable passed to AWS.
-        :param current_page: XPath expression locating current paginator page.
-        :param total_pages: XPath expression locating total number of pages.
-        :param total_results: XPath expression locating total number of results.
-        :param limit: limit fetched pages to this amount (restricted to a 
-        maximum of 400 pages by API itself).
-        :param nspace: used XML name space.
-        """
-        self.counter = counter
-        self.current_page_xpath = current_page
-        self.total_pages_xpath = total_pages
-        self.total_results_xpath = total_results
-
-        self.limit = limit
-        self.nspace = nspace
-
-    def __call__(self, fun, *args, **kwargs):
-        """
-        Iterate over all paginated results of ``fun``.
-        """
-        self.current_page = 0
-        self.total_pages = 1
-        self.total_results = 0
-
-        kwargs[self.counter] = kwargs.get(self.counter, 1)
-
-        while (self.current_page < self.total_pages
-        and (self.limit is None or self.current_page < self.limit)):
-
-            root = fun(*args, **kwargs)
-
-            if self.nspace is None:
-                self.nspace = root.nsmap.get(None, '')
-
-            self.current_page = self._get_current_page_numer(root)
-            self.total_pages = self._get_total_page_numer(root)
-            self.total_results = self._get_total_results(root)
-
-            yield root
-
-            kwargs[self.counter] += 1
-
-    def _get_total_page_numer(self, root):
-        """
-        Get total number of paginator pages.
-        """
-        try:
-            node = root.xpath(self.total_pages_xpath,
-                          namespaces={'aws' : self.nspace})[0]
-            return node.pyval
-        except AttributeError:
-            # node has no attribute pyval so it better be a number
-            return int(node)
-        except IndexError:
-            return 0
-
-    def _get_current_page_numer(self, root):
-        """
-        Get number of current paginator page. If it cannot be extracted, it is
-        probably the first.
-        """
-        try:
-            node = root.xpath(self.current_page_xpath,
-                          namespaces={'aws' : self.nspace})[0]
-            return node.pyval
-        except AttributeError:
-            # node has no attribute pyval so it better be a number
-            return int(node)
-        except IndexError:
-            return 1
-
-    def _get_total_results(self, root):
-        """
-        Get total number of results.
-        """
-        try:
-            node = root.xpath(self.total_results_xpath,
-                          namespaces={'aws' : self.nspace})[0]
-            return node.pyval
-        except AttributeError:
-            # node has no attribute pyval so it better be a number
-            return int(node)
-        except IndexError:
-            return 0

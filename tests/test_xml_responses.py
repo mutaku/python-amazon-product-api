@@ -2,18 +2,13 @@
 import os
 import pytest
 
-from tests.utils import CustomAPI, convert_camel_case
+from tests.utils import CustomAPI, convert_camel_case, Cart
 from tests import XML_TEST_DIR, TESTABLE_API_VERSIONS, TESTABLE_LOCALES
 from tests import AWS_KEY, SECRET_KEY
 
-from amazonproduct.api import API, ResultPaginator
-from amazonproduct import AWSError
-from amazonproduct import InvalidParameterValue, InvalidListType
-from amazonproduct import InvalidSearchIndex, InvalidResponseGroup
-from amazonproduct import InvalidParameterCombination 
-from amazonproduct import NoSimilarityForASIN
-from amazonproduct import NoExactMatchesFound, NotEnoughParameters
-from amazonproduct import DeprecatedOperation
+from amazonproduct.api import API
+from amazonproduct.errors import *
+from amazonproduct.paginators import LxmlPaginator
 
 def pytest_generate_tests(metafunc):
     # called once per each test function
@@ -33,12 +28,12 @@ def pytest_generate_tests(metafunc):
                     id='%s/%s' % (version, locale), 
                     funcargs={'api' : api})
 
-#def setup_module(module):
-#    import _pytest
-#    module._monkeypatch = _pytest.monkeypatch.monkeypatch()
-#
-#def teardown_module(module):
-#    module._monkeypatch.undo()
+##def setup_module(module):
+##    import _pytest
+##    module._monkeypatch = _pytest.monkeypatch.monkeypatch()
+##
+##def teardown_module(module):
+##    module._monkeypatch.undo()
 
 class TestCorrectVersion (object):
 
@@ -123,9 +118,9 @@ class TestItemSearch (object):
         
     #@ignore_locales('jp')
     def test_lookup_by_title(self, api):
-        result = api.item_search('Books', Title='Harry Potter')
-        for item in result.Items.Item:
-            assert item.ASIN == item.ASIN.pyval == item.ASIN.text
+        for result in api.item_search('Books', Title='Harry Potter', limit=1):
+            for item in result.Items.Item:
+                assert item.ASIN == item.ASIN.pyval == item.ASIN.text
         
 
 class TestSimilarityLookup (object):
@@ -159,25 +154,26 @@ class TestResultPaginator (object):
     api_versions = ['2009-10-01', '2009-11-01']
     locales = ['de']
 
+    class ReviewPaginator (LxmlPaginator):
+        counter = 'ReviewPage'
+        current_page_xpath = '//aws:Items/aws:Request/aws:ItemLookupRequest/aws:ReviewPage'
+        total_pages_xpath = '//aws:Items/aws:Item/aws:CustomerReviews/aws:TotalReviewPages'
+        total_results_xpath = '//aws:Items/aws:Item/aws:CustomerReviews/aws:TotalReviews'
+
     def test_itemsearch_pagination(self, api):
 
         results = 272
         pages = 28
 
-        paginator = ResultPaginator('ItemPage',
-            '//aws:Items/aws:Request/aws:ItemSearchRequest/aws:ItemPage',
-            '//aws:Items/aws:TotalPages',
-            '//aws:Items/aws:TotalResults',
-            limit=10)
-
-        for page, root in enumerate(paginator(api.item_search, 'Books', 
-                        Publisher='Galileo Press', Sort='salesrank')):
-            assert paginator.total_results == results
-            assert paginator.total_pages == pages
-            assert paginator.current_page == page+1
+        paginator = api.item_search('Books', 
+                Publisher='Galileo Press', Sort='salesrank', limit=10)
+        for page, root in enumerate(paginator):
+            assert paginator.results == results
+            assert paginator.pages == pages
+            assert paginator.current == page+1
 
         assert page == 9
-        assert paginator.current_page == 10
+        assert paginator.current == 10
 
     def test_review_pagination(self, api):
         # reviews for "Harry Potter and the Philosopher's Stone"
@@ -190,34 +186,27 @@ class TestResultPaginator (object):
             '2009-11-01' : (2465, 493),
         }
 
-        paginator = ResultPaginator('ReviewPage',
-            '//aws:Items/aws:Request/aws:ItemLookupRequest/aws:ReviewPage',
-            '//aws:Items/aws:Item/aws:CustomerReviews/aws:TotalReviewPages',
-            '//aws:Items/aws:Item/aws:CustomerReviews/aws:TotalReviews',
-            limit=10)
+        paginator = self.ReviewPaginator(api.item_lookup, 
+            ASIN, ResponseGroup='Reviews', limit=10)
 
-        for page, root in enumerate(paginator(api.item_lookup,
-                        ASIN, ResponseGroup='Reviews')):
+        for page, root in enumerate(paginator):
             reviews, pages = VALUES[api.VERSION]
-            assert paginator.total_results == reviews
-            assert paginator.total_pages == pages
-            assert paginator.current_page == page+1
+            assert paginator.results == reviews
+            assert paginator.pages == pages
+            assert paginator.current == page+1
 
         assert page == 9
-        assert paginator.current_page == 10
+        assert paginator.current == 10
 
     def test_pagination_works_for_missing_reviews(self, api):
         # "Sherlock Holmes (limitierte Steelbook Edition) [Blu-ray]"
         # had no reviews at time of writing
         ASIN = 'B0039NM7Y2'
 
-        paginator = ResultPaginator('ReviewPage',
-            '//aws:Items/aws:Request/aws:ItemLookupRequest/aws:ReviewPage',
-            '//aws:Items/aws:Item/aws:CustomerReviews/aws:TotalReviewPages',
-            '//aws:Items/aws:Item/aws:CustomerReviews/aws:TotalReviews')
+        paginator = self.ReviewPaginator(api.item_lookup, 
+            ASIN, ResponseGroup='Reviews')
 
-        for page, root in enumerate(paginator(api.item_lookup,
-                        ASIN, ResponseGroup='Reviews')):
+        for page, root in enumerate(paginator):
             assert not hasattr(root.Items.Item, 'CustomerReviews')
 
         assert page == 0
@@ -317,6 +306,149 @@ class TestBrowseNodeLookup (object):
         assert children == self.CHILDREN[api.locale]
         assert ancestors == self.ANCESTORS[api.locale]
         
+        
+class TestCartCreate (object):
+
+    """
+    Check that all XML responses for CartCreate are parsed correctly.
+    """
+
+    def test_creating_basket_with_empty_items_fails(self, api):
+        pytest.raises(ValueError, api.cart_create, {})
+        pytest.raises(ValueError, api.cart_create, {'0451462009' : 0})
+
+    def test_creating_basket_with_negative_item_quantity_fails(self, api):
+        pytest.raises(ValueError, api.cart_create, {'0201896834' : -1})
+
+    def test_creating_basket_with_quantity_too_high_fails(self, api):
+        pytest.raises(ValueError, api.cart_create, {'0201896834' : 1000})
+
+    def test_creating_basket_with_unknown_item_fails(self, api):
+        pytest.raises(InvalidCartItem, api.cart_create, {'021554' : 1})
+
+    def test_create_cart(self, api):
+        root = api.cart_create({
+            '0201896834' : 1, # The Art of Computer Programming Vol. 1
+            '0201896842' : 1, # The Art of Computer Programming Vol. 2
+       })
+        cart = Cart.from_xml(root.Cart)
+        assert len(cart.items) == 2
+        assert cart['0201896834'].quantity == 1
+        assert cart['0201896842'].quantity == 1
+
+
+def pytest_funcarg__cart(request):
+    api = request._funcargs['api']
+    items = {
+        '0201896834' : 1, # The Art of Computer Programming Vol. 1
+        '0201896842' : 1, # The Art of Computer Programming Vol. 2
+    }
+    cart = api.cart_create(items).Cart
+    print cart.__dict__
+    return cart
+
+
+class TestCartAdd (object):
+
+    """
+    Check that all XML responses for CartAdd are parsed correctly.
+    """
+
+    def test_adding_with_wrong_cartid_hmac_fails(self, api, cart):
+        pytest.raises(CartInfoMismatch, api.cart_add, '???', cart.HMAC, {'0201896834' : 1})
+        pytest.raises(CartInfoMismatch, api.cart_add, cart.CartId, '???', {'0201896834' : 1})
+
+    def test_adding_empty_items_fails(self, api, cart):
+        pytest.raises(ValueError, api.cart_add, cart.CartId, cart.HMAC, {})
+        pytest.raises(ValueError, api.cart_add, cart.CartId, cart.HMAC, {'0451462009' : 0})
+
+    def test_adding_negative_item_quantity_fails(self, api, cart):
+        pytest.raises(ValueError, api.cart_add, cart.CartId, cart.HMAC, {'0201896834' : -1})
+
+    def test_adding_item_quantity_too_high_fails(self, api, cart):
+        pytest.raises(ValueError, api.cart_add, cart.CartId, cart.HMAC, {'0201896834' : 1000})
+
+    def test_adding_unknown_item_fails(self, api, cart):
+        pytest.raises(InvalidCartItem, api.cart_add, cart.CartId, cart.HMAC, {'021554' : 1})
+
+    def test_adding_item_already_in_cart_fails(self, api, cart):
+        pytest.raises(ItemAlreadyInCart, api.cart_add, cart.CartId, 
+                          cart.HMAC, {'0201896842' : 2})
+
+    def test_adding_item(self, api, cart):
+        root = api.cart_add(cart.CartId, cart.HMAC, {
+            '0201896850' : 1, # The Art of Computer Programming Vol. 3
+        })
+        cart = Cart.from_xml(root.Cart)
+        item = cart['0201896850']
+        assert item.quantity == 1
+        assert item.asin == '0201896850'
+
+
+class TestCartModify (object):
+
+    """
+    Check that all XML responses for CartModify are parsed correctly.
+    """
+
+    def test_modifying_with_wrong_cartid_hmac_fails(self, api, cart):
+        pytest.raises(CartInfoMismatch, api.cart_modify, '???', cart.HMAC, {'0201896834' : 1})
+        pytest.raises(CartInfoMismatch, api.cart_modify, cart.CartId, '???', {'0201896834' : 1})
+
+    def test_modifying_empty_items_fails(self, api, cart):
+        pytest.raises(ValueError, api.cart_modify, cart.CartId, cart.HMAC, {})
+
+    def test_modifying_negative_item_quantity_fails(self, api, cart):
+        pytest.raises(ValueError, api.cart_modify, cart.CartId, cart.HMAC, {'0201896834' : -1})
+
+    def test_modifying_item_quantity_too_high_fails(self, api, cart):
+        pytest.raises(ValueError, api.cart_modify, cart.CartId, cart.HMAC, {'0201896834' : 1000})
+
+    def test_modfying_item(self, api, cart):
+        root = api.cart_modify(cart.CartId, cart.HMAC, {
+            '0201896834' : 0, # The Art of Computer Programming Vol. 1
+            '0201896842' : 1, # The Art of Computer Programming Vol. 2
+        })
+        cart = Cart.from_xml(root.Cart)
+        from lxml import etree
+        print etree.tostring(root.Cart, pretty_print=True)
+        assert len(cart.items) == 1
+        item = cart['0201896842']
+        assert item.quantity == 1
+        assert item.asin == '0201896842'
+
+
+class TestCartGet (object):
+
+    """
+    Check that all XML responses for CartGet are parsed correctly.
+    """
+
+    def test_getting_with_wrong_cartid_hmac_fails(self, api, cart):
+        pytest.raises(CartInfoMismatch, api.cart_get, '???', cart.HMAC)
+        pytest.raises(CartInfoMismatch, api.cart_get, cart.CartId, '???')
+
+    def test_getting_cart(self, api, cart):
+        root = api.cart_get(cart.CartId, cart.HMAC)
+        cart = Cart.from_xml(root.Cart)
+        assert len(cart.items) == 1
+
+
+class TestCartClear (object):
+
+    """
+    Check that all XML responses for CartClear are parsed correctly.
+    """
+
+    def test_clearing_with_wrong_cartid_hmac_fails(self, api, cart):
+        pytest.raises(CartInfoMismatch, api.cart_clear, '???', cart.HMAC)
+        pytest.raises(CartInfoMismatch, api.cart_clear, cart.CartId, '???')
+
+    def test_clearing_cart(self, api, cart):
+        root = api.cart_clear(cart.CartId, cart.HMAC)
+        cart = Cart.from_xml(root.Cart)
+        assert len(cart.items) == 0
+
 
 class TestDeprecatedOperations (object):
 
@@ -336,7 +468,7 @@ class TestDeprecatedOperations (object):
     * VehicleSearch
     """
 
-    DEPRECATED_OPRATIONS = [
+    DEPRECATED_OPERATIONS = [
         'CustomerContentLookup',
         'CustomerContentSearch',
         'Help',
@@ -350,12 +482,12 @@ class TestDeprecatedOperations (object):
     ]
 
     def test_calling_deprecated_operations(self, api):
-        for operation in self.DEPRECATED_OPRATIONS:
+        for operation in self.DEPRECATED_OPERATIONS:
             method = getattr(api, convert_camel_case(operation))
             pytest.raises(DeprecatedOperation, method)
 
     def test_calling_deprecated_operations_using_call_fails(self, api):
-        for operation in self.DEPRECATED_OPRATIONS:
+        for operation in self.DEPRECATED_OPERATIONS:
             pytest.raises(DeprecatedOperation, api.call, Operation=operation)
 
 
